@@ -146,34 +146,49 @@ export default function Galaxy() {
   // One-time guard
   const bootedRef = useRef(false);
 
-  // Data loader
+  // ---------- Data loader (UPDATED: waits for room data in group mode) ----------
   const fetchGalaxyData = useCallback(async (): Promise<GalaxyData> => {
     setIsLoading(true);
     try {
       if (isGroup && code) {
-        const r = await fetch(`/api/group/get?code=${encodeURIComponent(code)}`);
-        if (!r.ok) {
-          console.error("Group get failed:", await r.text());
-          return { nodes: [], links: [] };
-        }
-        const j = await r.json();
-        const all: SpotifyArtist[] = [];
-        for (const m of j.members || []) {
-          for (const a of m.topArtists || []) {
-            all.push({
-              id: a.id,
-              name: a.name,
-              genres: a.genres,
-              popularity: a.popularity,
-              images: a.image ? [{ url: a.image }] : undefined,
-            });
+        // Poll up to ~40s (20 * 2s) for at least one artist from any member
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const r = await fetch(`/api/group/get?code=${encodeURIComponent(code)}`);
+          if (!r.ok) {
+            console.error("Group get failed:", await r.text());
+            await new Promise((res) => setTimeout(res, 2000));
+            continue;
           }
+          const j = await r.json();
+
+          const all: SpotifyArtist[] = [];
+          for (const m of j.members || []) {
+            for (const a of m.topArtists || []) {
+              all.push({
+                id: a.id,
+                name: a.name,
+                genres: a.genres,
+                popularity: a.popularity,
+                images: a.image ? [{ url: a.image }] : undefined,
+              });
+            }
+          }
+
+          const seen = new Set<string>();
+          const unique = all.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
+
+          if (unique.length > 0) {
+            return processData(unique);
+          }
+
+          // Still empty; wait then try again
+          await new Promise((res) => setTimeout(res, 2000));
         }
-        const seen = new Set<string>();
-        const unique = all.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
-        return processData(unique);
+        // Timed out waiting for data
+        return { nodes: [], links: [] };
       }
 
+      // Solo mode
       const response = await fetch("/api/me/top?range=medium_term");
       if (!response.ok) {
         console.error("Top artists failed:", response.status, await response.text());
@@ -336,7 +351,7 @@ export default function Galaxy() {
         };
 
         // ---------- CAMERA CONTAINER ----------
-        cameraContainer = new PIXI.Container();
+        const cameraContainer = new PIXI.Container();
         pixiApp.stage.addChild(cameraContainer);
         cameraContainerRef.current = cameraContainer;
 
@@ -724,76 +739,119 @@ export default function Galaxy() {
     );
   };
 
+  /** Legend component (unchanged from your version) */
   const Legend = () => {
     const hexToCss = (hex: number) => "#" + hex.toString(16).padStart(6, "0").toUpperCase();
-    const visibleGenres = Object.entries(genreColorMap).slice(0, 6);
+    const genres = Object.entries(genreColorMap).sort(([a], [b]) => a.localeCompare(b));
+
     return (
-      <div
-        id="galaxy-legend"
-        style={{
-          position: "absolute",
-          top: 80,
-          right: 20,
-          zIndex: 50,
-          backgroundColor: "rgba(30,41,59,0.7)",
-          backdropFilter: "blur(5px)",
-          padding: 12,
-          borderRadius: 10,
-          border: "1px solid rgba(255,255,255,0.1)",
-          boxShadow: "0 4px 10px rgba(0,0,0,0.4)",
-          color: "#fff",
-          fontFamily: "Inter, sans-serif",
-          fontSize: 11,
-          width: 180,
-        }}
-      >
-        <h3
-          style={{
-            margin: "0 0 8px 0",
-            fontSize: 14,
-            color: "#63d4f1",
-            borderBottom: "1px solid rgba(255,255,255,0.1)",
-            paddingBottom: 6,
-          }}
-        >
-          Galaxy Key
-        </h3>
-
-        <div style={{ marginBottom: 8 }}>
-          <p style={{ margin: "0 0 2px 0", fontWeight: "bold", fontSize: 12 }}>Star Size</p>
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "#fff", opacity: 0.6 }} />
-            <span style={{ marginLeft: 6, opacity: 0.8 }}>Less Listened</span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", marginTop: 2 }}>
-            <div style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: "#fff" }} />
-            <span style={{ marginLeft: 6, opacity: 0.9 }}>More Listened (Pop.)</span>
-          </div>
+      <div id="galaxy-legend" className="gk-card" aria-labelledby="gk-title">
+        <div className="gk-header">
+          <h3 id="gk-title" className="gk-title">Galaxy Key</h3>
+          <span className="gk-pill" aria-hidden>Legend</span>
         </div>
 
-        <div style={{ marginBottom: 8 }}>
-          <p style={{ margin: "0 0 2px 0", fontWeight: "bold", fontSize: 12 }}>Line Thickness</p>
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <div style={{ width: 25, height: 1, backgroundColor: hexToCss(0x63d4f1), opacity: 0.2 }} />
-            <span style={{ marginLeft: 6, opacity: 0.8 }}>Low Overlap</span>
+        <section className="gk-section" aria-label="Star size">
+          <h4 className="gk-section-title">Star Size</h4>
+          <div className="gk-row">
+            <span className="gk-dot gk-dot--sm" />
+            <span className="gk-label">Less Listened</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", marginTop: 2 }}>
-            <div style={{ width: 25, height: 2, backgroundColor: hexToCss(0x63d4f1) }} />
-            <span style={{ marginLeft: 6, opacity: 0.9 }}>High Overlap (Sim.)</span>
+          <div className="gk-row">
+            <span className="gk-dot gk-dot--lg" />
+            <span className="gk-label">More Listened (Popularity)</span>
           </div>
-        </div>
+        </section>
 
-        <div>
-          <p style={{ margin: "0 0 4px 0", fontWeight: "bold", fontSize: 12 }}>Star Color (Genre)</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-            {visibleGenres.map(([genre, color]) => (
-              <div key={genre} style={{ display: "flex", alignItems: "center" }}>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: hexToCss(color) }} />
-                <span style={{ marginLeft: 4, fontSize: 10 }}>{genre}</span>
+        <section className="gk-section" aria-label="Line thickness">
+          <h4 className="gk-section-title">Line Thickness</h4>
+          <div className="gk-row">
+            <span className="gk-line gk-line--thin" />
+            <span className="gk-label">Low Overlap / Similarity</span>
+          </div>
+          <div className="gk-row">
+            <span className="gk-line gk-line--thick" />
+            <span className="gk-label">High Overlap / Similarity</span>
+          </div>
+        </section>
+
+        <section className="gk-section" aria-label="Star colors by genre">
+          <div className="gk-section-title-row">
+            <h4 className="gk-section-title">Star Color (Genre)</h4>
+            <span className="gk-count" title="Total genres">{genres.length}</span>
+          </div>
+
+          <div className="gk-grid" role="list">
+            {genres.map(([name, hex]) => (
+              <div className="gk-chip" role="listitem" key={name} title={name}>
+                <span
+                  className="gk-chip-dot"
+                  style={{
+                    background: hexToCss(hex),
+                    boxShadow: `0 0 8px ${hexToCss(hex)}99`,
+                  }}
+                />
+                <span className="gk-chip-text">{name}</span>
               </div>
             ))}
           </div>
-        </div>
+        </section>
+
+        <style jsx>{`
+          .gk-card {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            width: 300px;
+            z-index: 50;
+            color: rgba(255,255,255,0.92);
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+            box-shadow:
+              0 8px 24px rgba(0,0,0,0.35),
+              inset 0 1px 0 rgba(255,255,255,0.06);
+            padding: 14px 14px 12px;
+            font-family: Inter, system-ui, sans-serif;
+            user-select: none;
+          }
+          .gk-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+          .gk-title {
+            margin: 0; font-size: 18px; font-weight: 800; letter-spacing: .2px;
+            background: linear-gradient(90deg,#ffffff,#63d4f1);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+          }
+          .gk-pill { font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.05); }
+          .gk-section { padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.12); }
+          .gk-section:first-of-type { border-top: none; padding-top: 4px; }
+          .gk-section-title { margin: 0 0 8px 0; font-size: 12px; letter-spacing: .3px; text-transform: uppercase; color: rgba(255,255,255,0.7); }
+          .gk-section-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+          .gk-count { font-size: 10px; color: rgba(255,255,255,0.7); border: 1px solid rgba(255,255,255,0.12); padding: 2px 6px; border-radius: 999px; }
+          .gk-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+          .gk-label { font-size: 13px; }
+          .gk-dot { display: inline-block; border-radius: 999px; background: #ffffff; box-shadow: 0 0 8px rgba(255,255,255,0.35); }
+          .gk-dot--sm { width: 8px; height: 8px; opacity: .7; }
+          .gk-dot--lg { width: 16px; height: 16px; }
+          .gk-line {
+            display: inline-block; width: 80px; border-radius: 999px;
+            background: linear-gradient(90deg, rgba(99,212,241,0) 0%, rgba(99,212,241,1) 20%, rgba(99,212,241,1) 80%, rgba(99,212,241,0) 100%);
+            box-shadow: 0 0 8px rgba(99,212,241,.35);
+          }
+          .gk-line--thin { height: 2px; opacity: .5; }
+          .gk-line--thick { height: 6px; opacity: .9; }
+          .gk-grid {
+            max-height: 260px; overflow-y: auto; padding-right: 6px;
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px;
+          }
+          @media (min-width: 420px) { .gk-card { width: 320px; } .gk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+          .gk-chip { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          .gk-chip-dot { width: 10px; height: 10px; border-radius: 999px; flex: 0 0 auto; }
+          .gk-chip-text { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+          .gk-grid::-webkit-scrollbar { width: 8px; }
+          .gk-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 8px; }
+          .gk-grid::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+        `}</style>
       </div>
     );
   };
