@@ -1,3 +1,30 @@
+// lib/groupStore.ts
+import { kv } from "@vercel/kv";
+
+export type MemberPayload = {
+  id: string; // stable client id (e.g., crypto.randomUUID stored in localStorage)
+  displayName?: string;
+  topArtists: Array<{
+    id: string;
+    name: string;
+    popularity?: number;
+    image?: string;
+    genres?: string[];
+  }>;
+};
+
+const ROOM_TTL_SECONDS = 60 * 60 * 4; // 4 hours (adjust as you like)
+const roomKey = (code: string) => `room:${code}`;
+
+/**
+ * Create a room if it doesn't already exist.
+ * Uses NX so we don't overwrite existing rooms in a race.
+ * Returns true if created, false if it already existed.
+ */
+export async function createRoom(code: string): Promise<boolean> {
+  // set NX + EX to create only if not exists, with TTL
+  // @vercel/kv maps to Upstash Redis SET with options
+  const ok = await kv.set(roomKey(code), JSON.stringify([]), {
     ex: ROOM_TTL_SECONDS,
     nx: true,
   });
